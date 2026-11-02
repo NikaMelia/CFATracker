@@ -77,6 +77,13 @@
   }
   const syncBusy = () => !!(sync.timer || sync.inflight);
 
+  // Usernames: Supabase Auth needs an email, so "anna" becomes "anna@<usernameDomain>".
+  // Email confirmation must be OFF in Supabase, so nothing is ever sent to these addresses.
+  const USER_DOMAIN = (CFG.usernameDomain || "nikamelia.github.io").toLowerCase();
+  const USERNAME_RE = /^[a-z0-9][a-z0-9._-]{2,29}$/;
+  const toEmail = (username) => username + "@" + USER_DOMAIN;
+  const displayName = (u) => { const e = (u && u.email) || ""; return e.endsWith("@" + USER_DOMAIN) ? e.slice(0, -USER_DOMAIN.length - 1) : e; };
+
   // ---------- helpers ----------
   const $ = (sel, root = document) => root.querySelector(sel);
   const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -151,7 +158,7 @@
     const el = $("#account"); if (!el) return;
     if (!CLOUD || !user) { el.innerHTML = ""; return; }
     const label = { saved: "Saved", pending: "Saving…", saving: "Saving…", error: "Not saved — retrying" }[sync.status];
-    el.innerHTML = `<span class="sync ${sync.status}">${label}</span><span class="muted small who">${esc(user.email)}</span>
+    el.innerHTML = `<span class="sync ${sync.status}">${label}</span><span class="muted small who">${esc(displayName(user))}</span>
       <button class="btn ghost sm" data-action="signOut">Sign out</button>`;
   }
   function render() {
@@ -470,7 +477,7 @@
         <p class="muted small">Weights total ${(wsum * 100).toFixed(1)}%. Change topics and readings here when the curriculum or level changes.</p>
         ${topics}<button class="btn ghost sm" data-action="addTopic">+ Add topic</button></div>
       ${CLOUD && user ? `<div class="card"><h3>Account</h3>
-        <p class="muted small">Signed in as <b>${esc(user.email)}</b>. Your tracker is saved to your account and syncs across devices.</p>
+        <p class="muted small">Signed in as <b>${esc(displayName(user))}</b>. Your tracker is saved to your account and syncs across devices.</p>
         <form id="password-form" class="row"><input type="password" name="password" placeholder="New password" minlength="8" autocomplete="new-password" required>
           <button class="btn ghost sm" type="submit">Change password</button></form></div>` : ""}
       <div class="card"><h3>Backup</h3>
@@ -483,19 +490,25 @@
   }
 
   // ---------- login (cloud mode) ----------
+  let loginMode = "signin"; // or "signup"
   function renderLogin(message) {
     $("#tabs").innerHTML = ""; renderAccountBar();
+    const up = loginMode === "signup";
     $("#view").innerHTML = `<div class="login card">
-      <h2>Sign in</h2>
-      <p class="muted small">Use the email and password you were given.</p>
+      <h2>${up ? "Create account" : "Sign in"}</h2>
       <form id="login-form">
-        <label>Email<input type="email" name="email" autocomplete="username" required></label>
-        <label>Password<input type="password" name="password" autocomplete="current-password" required></label>
+        <label>Username<input type="text" name="username" autocomplete="username" autocapitalize="none" spellcheck="false" required></label>
+        <label>Password<input type="password" name="password" autocomplete="${up ? "new-password" : "current-password"}" ${up ? 'minlength="8"' : ""} required></label>
+        ${up ? `<label>Repeat password<input type="password" name="password2" autocomplete="new-password" required></label>
+          <p class="muted small" style="margin:0">Username: 3–30 letters, numbers, dots, dashes or underscores. Password: at least 8 characters.</p>` : ""}
         <div class="form-msg" id="login-msg">${esc(message || "")}</div>
-        <button class="btn" type="submit" style="width:100%">Sign in</button>
+        <button class="btn" type="submit" style="width:100%">${up ? "Create account" : "Sign in"}</button>
       </form>
-      <button class="link-btn small" data-action="forgotPassword">Forgot password?</button></div>`;
-    const f = $("#login-form input[name=email]"); if (f) f.focus();
+      <p class="small muted" style="margin:14px 0 0">${up
+        ? `Already have an account? <button class="link-btn" data-action="toggleLogin">Sign in</button>`
+        : `New here? <button class="link-btn" data-action="toggleLogin">Create an account</button>`}</p>
+      ${up ? "" : `<p class="small muted" style="margin:6px 0 0">Forgot your password? Ask the admin to reset it.</p>`}</div>`;
+    const f = $("#login-form input[name=username]"); if (f) f.focus();
   }
   function renderSetPassword() {
     $("#tabs").innerHTML = "";
@@ -542,7 +555,7 @@
       // Defer: Supabase recommends not awaiting other calls inside this callback.
       setTimeout(() => {
         if (event === "PASSWORD_RECOVERY") { recovering = true; user = session.user; state = null; renderSetPassword(); return; }
-        if (event === "SIGNED_OUT") { user = null; state = null; renderLogin(); return; }
+        if (event === "SIGNED_OUT") { user = null; state = null; loginMode = "signin"; renderLogin(); return; }
         if (session && session.user && (event === "SIGNED_IN" || event === "INITIAL_SESSION")) {
           if (recovering) return; // waiting for the new password first
           startSession(session.user);
@@ -625,13 +638,7 @@
       await sb.auth.signOut();
     },
     retryLoad() { const u = startSession.pending; if (u) startSession(u); },
-    async forgotPassword() {
-      const email = ($("#login-form input[name=email]") || {}).value || prompt("Your email");
-      if (!email) return;
-      const { error } = await sb.auth.resetPasswordForEmail(email, { redirectTo: location.origin + location.pathname });
-      const msg = $("#login-msg");
-      if (msg) msg.textContent = error ? error.message : "If that email has an account, a reset link is on its way.";
-    },
+    toggleLogin() { loginMode = loginMode === "signin" ? "signup" : "signin"; renderLogin(); },
   };
 
   // login + password forms
@@ -639,10 +646,24 @@
     if (e.target.id === "login-form") {
       e.preventDefault();
       const f = new FormData(e.target), btn = e.target.querySelector("button[type=submit]"), msg = $("#login-msg");
-      btn.disabled = true; msg.textContent = "";
-      const { error } = await sb.auth.signInWithPassword({ email: f.get("email").trim(), password: f.get("password") });
+      const username = f.get("username").trim().toLowerCase(), password = f.get("password");
+      msg.textContent = "";
+      if (!USERNAME_RE.test(username)) { msg.textContent = "Username: 3–30 characters — letters, numbers, dots, dashes or underscores."; return; }
+      if (loginMode === "signup" && password !== f.get("password2")) { msg.textContent = "Passwords don't match."; return; }
+      btn.disabled = true;
+      const creds = { email: toEmail(username), password };
+      const { data, error } = loginMode === "signup" ? await sb.auth.signUp(creds) : await sb.auth.signInWithPassword(creds);
       btn.disabled = false;
-      if (error) msg.textContent = error.message === "Invalid login credentials" ? "Wrong email or password." : error.message;
+      if (error) {
+        const m = error.message || "";
+        msg.textContent = /invalid login credentials/i.test(m) ? "Wrong username or password."
+          : /already (registered|exists)/i.test(m) ? "That username is taken."
+          : /signups? not allowed|signup is disabled/i.test(m) ? "Registration is turned off."
+          : m;
+      } else if (loginMode === "signup" && !data.session) {
+        // Supabase "Confirm email" is still on — it can't work with usernames.
+        msg.textContent = "Account created, but it can't be used until the admin turns off email confirmation in Supabase.";
+      }
     }
     if (e.target.id === "password-form") {
       e.preventDefault();

@@ -126,5 +126,5 @@ tr.parent td { font-weight: 600; }
 .login label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--muted); }
 .login input { padding: 8px 10px; background: var(--card); border: 1px solid var(--line); border-radius: 6px; color: var(--text); font-size: 14px; }
 .form-msg { color: var(--bad); font-size: 13px; min-height: 1em; }
-.link-btn { background: none; border: 0; color: var(--accent); cursor: pointer; padding: 10px 0 0; }
+.link-btn { background: none; border: 0; color: var(--accent); cursor: pointer; padding: 0; font: inherit; }
 @media (max-width: 560px) { .account .who { display: none; } }

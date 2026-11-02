@@ -2,7 +2,7 @@
 
 A simple study tracker for the CFA exam, built from the original Excel tracker (`Tracker 1.xlsx`).
 It's plain HTML/CSS/JS: no install and no build step. Open `index.html` in a browser.
-Optional login for a few people with per-user cloud sync via Supabase: see below.
+Optional username/password accounts with per-user cloud sync via Supabase: see below.
 
 ## What it does (Excel sheet → app tab)
 
@@ -23,19 +23,30 @@ Grades match the Excel formulas: topic grade = Σcorrect / Σtotal; weighted gra
 ## Login & sync setup (Supabase, free)
 
 Without setup the app runs in **local mode**: no login, data stays in the browser.
-With Supabase, each person signs in with email and password and gets their **own private tracker**, synced across devices.
+With Supabase, people **register themselves with a username and password** and each gets their **own private tracker**, synced across devices.
 
 1. Create a free account at https://supabase.com, then click **New project** (any name, pick a region close to you).
 2. **SQL Editor → New query**: paste the contents of [`supabase/schema.sql`](supabase/schema.sql) and click **Run**.
 3. **Authentication → Sign In / Providers**:
-   - Turn **off** "Allow new users to sign up". Only people you add can log in.
-   - Under **Email**, turn **off** "Confirm email" (optional; skips the confirmation step for users you create).
-4. **Authentication → Users → Add user → Create new user**: enter each person's email and a password, and tick *Auto Confirm User*. Give them their password; they can change it later in Settings.
-5. **Authentication → URL Configuration**: set **Site URL** to `https://nikamelia.github.io/CFATracker/` (used by "Forgot password?" emails).
-6. **Project Settings → API Keys**: copy the **Project URL** and the **publishable** key (or the legacy **anon public** key) into [`config.js`](config.js). Commit and push.
+   - Keep **"Allow new users to sign up"** ON.
+   - Under **Email**, turn **OFF "Confirm email"**. This is required: usernames have no real inbox.
+4. **Project Settings → API Keys**: copy the **Project URL** and the **publishable** key (or the legacy **anon public** key) into [`config.js`](config.js). Commit and push.
+
+How usernames work: Supabase Auth needs an email, so the app stores username `anna` as `anna@nikamelia.github.io`
+(set by `usernameDomain` in `config.js`). Nothing is ever emailed. In the Supabase dashboard (Authentication → Users) you'll see users listed that way.
 
 The publishable/anon key is designed to be public. Row Level Security in `schema.sql` ensures each user can read and write only their own data.
 Never put the **secret / service_role** key in this repo.
+
+Note: with sign-ups on, anyone who finds the site can create an account. They only ever see their own empty tracker.
+
+**Resetting a forgotten password** (there's no email to send a reset link to): in Supabase **SQL Editor** run
+```sql
+update auth.users
+set encrypted_password = crypt('NewPassword123', gen_salt('bf'))
+where email = 'anna@nikamelia.github.io';
+```
+They can then sign in and change it under Settings → Account.
 
 On first sign-in a new user gets an empty tracker with the full curriculum. If that browser already had local data (from before login existed), the app offers to upload it.
 Settings also has **Load Excel data** (the original spreadsheet's scores) and **Start over (blank)**.
