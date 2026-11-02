@@ -4,6 +4,9 @@
 
   const STORAGE_KEY = "cfa-tracker-v1";
   const CONSPECT = ["Not started", "In progress", "Done"];
+  // Where a topic is in the study cycle (Dashboard → Topics → Status).
+  const STATUSES = ["Not started", "Studying", "Practicing", "Revising", "Ready"];
+  const statusClass = (s) => "st-" + STATUSES.indexOf(s || "Not started");
 
   // ---------- state ----------
   // Two modes:
@@ -28,7 +31,7 @@
     if (!window.CFA_SEED) return emptyState();
     const s = clone(window.CFA_SEED);
     s.settings.examDate = ""; s.settings.startDate = todayISO();
-    s.topics.forEach((t) => (t.conspect = "Not started"));
+    s.topics.forEach((t) => { t.conspect = "Not started"; t.status = "Not started"; });
     s.passes = s.passes.map((p) => ({ id: p.id, name: p.name, results: {}, extras: [] }));
     s.hours = [];
     return s;
@@ -209,12 +212,13 @@
       const ts = topicScore(first, t);
       return `<tr><td>${esc(t.name)}</td><td class="muted">${esc(t.weightRange || "")}</td>
         <td class="num">${fmtNum(hbt[t.id] || 0)}</td><td class="num">${ts.done}/${ts.count}</td>
-        <td><select data-conspect="${t.id}">${CONSPECT.map((c) => `<option ${c === (t.conspect || "Not started") ? "selected" : ""}>${c}</option>`).join("")}</select></td>
+        <td><select class="status ${statusClass(t.status)}" data-status="${t.id}">${STATUSES.map((c) => `<option ${c === (t.status || "Not started") ? "selected" : ""}>${c}</option>`).join("")}</select></td>
+        <td><select class="status cs-${CONSPECT.indexOf(t.conspect || "Not started")}" data-conspect="${t.id}">${CONSPECT.map((c) => `<option ${c === (t.conspect || "Not started") ? "selected" : ""}>${c}</option>`).join("")}</select></td>
         ${state.passes.map((p) => `<td class="num">${pill(topicScore(p, t).pct)}</td>`).join("")}</tr>`;
     }).join("");
     const conspectDone = state.topics.filter((t) => t.conspect === "Done").length;
     const totalRow = `<tr class="total"><td>Total</td><td></td><td class="num">${fmtNum(hrs)}</td><td class="num">${fs.done}/${fs.count}</td>
-      <td>${conspectDone}/${state.topics.length} done</td>${sums.map(({ s: ps }) => `<td class="num">${pill(ps.pct)}</td>`).join("")}</tr>`;
+      <td>${state.topics.filter((t) => t.status === "Ready").length}/${state.topics.length} ready</td><td>${conspectDone}/${state.topics.length} done</td>${sums.map(({ s: ps }) => `<td class="num">${pill(ps.pct)}</td>`).join("")}</tr>`;
 
     // Grade bars per topic (first two passes)
     const colors = ["var(--accent)", "var(--good)"];
@@ -244,7 +248,7 @@
 
     return `${banner}<div class="kpis">${kpiHtml}</div>
       <div class="card"><h3>Topics</h3><div class="table-wrap"><table>
-        <thead><tr><th>Topic</th><th>Exam weight</th><th class="num">Hours</th><th class="num">Readings</th><th>Conspect</th>${passHeads}</tr></thead>
+        <thead><tr><th>Topic</th><th>Exam weight</th><th class="num">Hours</th><th class="num">Readings</th><th>Status</th><th>Conspect</th>${passHeads}</tr></thead>
         <tbody>${rows}${totalRow}</tbody></table></div></div>
       <div class="grid2">
         <div class="card"><h3>Grades by topic</h3><div class="legend">${legend}</div>${bars}</div>
@@ -395,6 +399,9 @@
       }
       save(); refreshPassNumbers(pass);
       return;
+    }
+    if (el.dataset.status) {
+      const t = state.topics.find((x) => x.id === el.dataset.status); t.status = el.value; save(); render(); return;
     }
     if (el.dataset.conspect) {
       const t = state.topics.find((x) => x.id === el.dataset.conspect); t.conspect = el.value; save(); render(); return;
@@ -604,7 +611,7 @@
     addTopic() {
       const name = prompt("Topic name");
       if (!name) return;
-      state.topics.push({ id: uid("t"), name: name.trim(), weightRange: "", weight: 0, conspect: "Not started", readings: [] }); save(); render();
+      state.topics.push({ id: uid("t"), name: name.trim(), weightRange: "", weight: 0, conspect: "Not started", status: "Not started", readings: [] }); save(); render();
     },
     deleteTopic(b) {
       const t = state.topics.find((x) => x.id === b.dataset.topic);
