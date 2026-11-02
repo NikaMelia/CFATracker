@@ -6,23 +6,76 @@
   const CONSPECT = ["Not started", "In progress", "Done"];
 
   // ---------- state ----------
-  let state = load();
+  // Two modes:
+  //  * cloud — config.js has Supabase keys: people sign in, each user's tracker is stored in the
+  //    `trackers` table (one JSON row per user) and syncs across devices.
+  //  * local — no config: data lives in this browser's localStorage only (original behaviour).
+  const CFG = window.CFA_CONFIG || {};
+  const CLOUD = !!(CFG.supabaseUrl && CFG.supabaseAnonKey && window.supabase);
+  let sb = null;          // Supabase client
+  let user = null;        // signed-in user (cloud mode)
+  let state = null;       // the tracker data
+  let remoteUpdatedAt = null;
+  const sync = { timer: null, inflight: false, again: false, status: "saved" };
+  let recovering = false; // user opened a password-reset link
 
   function clone(o) { return JSON.parse(JSON.stringify(o)); }
   function emptyState() {
     return { version: 1, settings: { examDate: "", startDate: "", hoursGoal: 300, level: "Level I" }, topics: [], passes: [{ id: "study", name: "First pass", results: {}, extras: [] }], hours: [] };
   }
-  function load() {
+  // Same curriculum as the Excel tracker, but without anybody's scores, hours or notes.
+  function blankTemplate() {
+    if (!window.CFA_SEED) return emptyState();
+    const s = clone(window.CFA_SEED);
+    s.settings.examDate = ""; s.settings.startDate = todayISO();
+    s.topics.forEach((t) => (t.conspect = "Not started"));
+    s.passes = s.passes.map((p) => ({ id: p.id, name: p.name, results: {}, extras: [] }));
+    s.hours = [];
+    return s;
+  }
+  function loadLocal() {
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
       if (raw) return JSON.parse(raw);
-    } catch (e) { /* storage unavailable or corrupt: fall back to seed */ }
-    return window.CFA_SEED ? clone(window.CFA_SEED) : emptyState();
+    } catch (e) { /* storage unavailable or corrupt */ }
+    return null;
   }
   function save() {
+    if (CLOUD) { scheduleRemoteSave(); return; }
     try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); }
     catch (e) { toast("Could not save — browser storage is unavailable. Export a backup!"); }
   }
+
+  // ---------- cloud sync ----------
+  function setSyncStatus(s) { sync.status = s; renderAccountBar(); }
+  function scheduleRemoteSave() {
+    setSyncStatus("pending");
+    clearTimeout(sync.timer);
+    sync.timer = setTimeout(pushRemote, 700);
+  }
+  async function pushRemote() {
+    sync.timer = null;
+    if (!user || !state) return;
+    if (sync.inflight) { sync.again = true; return; }
+    sync.inflight = true; setSyncStatus("saving");
+    const { data, error } = await sb.from("trackers")
+      .upsert({ user_id: user.id, data: state, updated_at: new Date().toISOString() })
+      .select("updated_at").single();
+    sync.inflight = false;
+    if (error) {
+      setSyncStatus("error");
+      clearTimeout(sync.timer); sync.timer = setTimeout(pushRemote, 5000); // retry
+      return;
+    }
+    remoteUpdatedAt = data.updated_at;
+    if (sync.again) { sync.again = false; pushRemote(); } else setSyncStatus("saved");
+  }
+  async function fetchRemote() {
+    const { data, error } = await sb.from("trackers").select("data, updated_at").eq("user_id", user.id).maybeSingle();
+    if (error) throw error;
+    return data;
+  }
+  const syncBusy = () => !!(sync.timer || sync.inflight);
 
   // ---------- helpers ----------
   const $ = (sel, root = document) => root.querySelector(sel);
@@ -94,7 +147,16 @@
     const h = location.hash.slice(1);
     return routes().some((r) => r.id === h) ? h : "dashboard";
   }
+  function renderAccountBar() {
+    const el = $("#account"); if (!el) return;
+    if (!CLOUD || !user) { el.innerHTML = ""; return; }
+    const label = { saved: "Saved", pending: "Saving…", saving: "Saving…", error: "Not saved — retrying" }[sync.status];
+    el.innerHTML = `<span class="sync ${sync.status}">${label}</span><span class="muted small who">${esc(user.email)}</span>
+      <button class="btn ghost sm" data-action="signOut">Sign out</button>`;
+  }
   function render() {
+    renderAccountBar();
+    if (!state) return;
     const cur = current();
     $("#tabs").innerHTML = routes().map((r) => `<button data-route="${r.id}" class="${r.id === cur ? "active" : ""}">${esc(r.label)}</button>`).join("");
     const view = $("#view");
@@ -407,11 +469,97 @@
       <div class="card"><h3>Curriculum &amp; exam weights</h3>
         <p class="muted small">Weights total ${(wsum * 100).toFixed(1)}%. Change topics and readings here when the curriculum or level changes.</p>
         ${topics}<button class="btn ghost sm" data-action="addTopic">+ Add topic</button></div>
+      ${CLOUD && user ? `<div class="card"><h3>Account</h3>
+        <p class="muted small">Signed in as <b>${esc(user.email)}</b>. Your tracker is saved to your account and syncs across devices.</p>
+        <form id="password-form" class="row"><input type="password" name="password" placeholder="New password" minlength="8" autocomplete="new-password" required>
+          <button class="btn ghost sm" type="submit">Change password</button></form></div>` : ""}
       <div class="card"><h3>Backup</h3>
-        <p class="muted small">Data is saved in this browser only. Export a backup regularly — you can import it on another computer or phone.</p>
+        <p class="muted small">${CLOUD ? "Download a copy of your data now and then, just in case." : "Data is saved in this browser only. Export a backup regularly — you can import it on another computer or phone."}</p>
         <div class="row"><button class="btn" data-action="exportJson">Export backup</button>
           <label class="btn ghost" style="cursor:pointer">Import backup<input type="file" id="import-file" accept="application/json,.json" hidden></label>
-          <span class="spacer"></span><button class="btn danger" data-action="resetSeed">Reset to Excel data</button></div></div>`;
+          <span class="spacer"></span>
+          <button class="btn danger" data-action="startBlank">Start over (blank)</button>
+          <button class="btn danger" data-action="resetSeed">Load Excel data</button></div></div>`;
+  }
+
+  // ---------- login (cloud mode) ----------
+  function renderLogin(message) {
+    $("#tabs").innerHTML = ""; renderAccountBar();
+    $("#view").innerHTML = `<div class="login card">
+      <h2>Sign in</h2>
+      <p class="muted small">Use the email and password you were given.</p>
+      <form id="login-form">
+        <label>Email<input type="email" name="email" autocomplete="username" required></label>
+        <label>Password<input type="password" name="password" autocomplete="current-password" required></label>
+        <div class="form-msg" id="login-msg">${esc(message || "")}</div>
+        <button class="btn" type="submit" style="width:100%">Sign in</button>
+      </form>
+      <button class="link-btn small" data-action="forgotPassword">Forgot password?</button></div>`;
+    const f = $("#login-form input[name=email]"); if (f) f.focus();
+  }
+  function renderSetPassword() {
+    $("#tabs").innerHTML = "";
+    $("#view").innerHTML = `<div class="login card"><h2>Choose a new password</h2>
+      <form id="password-form"><label>New password<input type="password" name="password" minlength="8" autocomplete="new-password" required></label>
+      <div class="form-msg"></div><button class="btn" type="submit" style="width:100%">Save password</button></form></div>`;
+  }
+  function renderMessage(html) { $("#tabs").innerHTML = ""; $("#view").innerHTML = `<div class="login card">${html}</div>`; }
+
+  async function startSession(u) {
+    if (user && user.id === u.id && state) return; // already running (token refresh etc.)
+    if (startSession.loading === u.id) return;      // INITIAL_SESSION and SIGNED_IN can both fire
+    startSession.loading = u.id;
+    user = u; state = null;
+    renderMessage(`<p class="muted">Loading your tracker…</p>`);
+    try {
+      const row = await fetchRemote();
+      if (row) { state = row.data; remoteUpdatedAt = row.updated_at; }
+      else {
+        // First sign-in: offer to move data saved in this browser (local mode) into the account.
+        const local = loadLocal();
+        if (local && confirm("This browser has tracker data saved from before. Upload it to your account?")) state = local;
+        else state = blankTemplate();
+        await pushRemote();
+      }
+      startSession.loading = null;
+      render();
+    } catch (err) {
+      startSession.loading = null;
+      renderMessage(`<h2>Could not load your data</h2><p class="muted">${esc(err.message || err)}</p>
+        <div class="row"><button class="btn" data-action="retryLoad">Try again</button><button class="btn ghost" data-action="signOut">Sign out</button></div>`);
+      user = null;
+      startSession.pending = u;
+    }
+  }
+
+  async function boot() {
+    if (!CLOUD) {
+      state = loadLocal() || (window.CFA_SEED ? clone(window.CFA_SEED) : emptyState());
+      render(); return;
+    }
+    sb = window.supabase.createClient(CFG.supabaseUrl, CFG.supabaseAnonKey);
+    sb.auth.onAuthStateChange((event, session) => {
+      // Defer: Supabase recommends not awaiting other calls inside this callback.
+      setTimeout(() => {
+        if (event === "PASSWORD_RECOVERY") { recovering = true; user = session.user; state = null; renderSetPassword(); return; }
+        if (event === "SIGNED_OUT") { user = null; state = null; renderLogin(); return; }
+        if (session && session.user && (event === "SIGNED_IN" || event === "INITIAL_SESSION")) {
+          if (recovering) return; // waiting for the new password first
+          startSession(session.user);
+        } else if (event === "INITIAL_SESSION" && !session) renderLogin();
+      }, 0);
+    });
+    // Pick up changes made on another device when coming back to this tab.
+    document.addEventListener("visibilitychange", async () => {
+      if (document.visibilityState !== "visible" || !user || !state || syncBusy()) return;
+      try {
+        const row = await fetchRemote();
+        if (row && row.updated_at !== remoteUpdatedAt && !syncBusy()) {
+          state = row.data; remoteUpdatedAt = row.updated_at; rerenderKeepOpen(); toast("Updated from another device");
+        }
+      } catch (e) { /* offline — ignore */ }
+    });
+    window.addEventListener("beforeunload", (e) => { if (syncBusy()) { e.preventDefault(); e.returnValue = ""; } });
   }
 
   const actions = {
@@ -465,9 +613,46 @@
     resetSeed() {
       if (!window.CFA_SEED) return;
       if (!confirm("Replace ALL current data with the data imported from the Excel file?")) return;
-      state = clone(window.CFA_SEED); save(); render(); toast("Reset to Excel data");
+      state = clone(window.CFA_SEED); save(); render(); toast("Loaded Excel data");
+    },
+    startBlank() {
+      if (!confirm("Erase ALL scores, hours and notes and start with an empty tracker?")) return;
+      state = blankTemplate(); save(); render(); toast("Started over");
+    },
+    async signOut() {
+      if (syncBusy() && !confirm("Some changes are still saving. Sign out anyway?")) return;
+      clearTimeout(sync.timer); sync.timer = null;
+      await sb.auth.signOut();
+    },
+    retryLoad() { const u = startSession.pending; if (u) startSession(u); },
+    async forgotPassword() {
+      const email = ($("#login-form input[name=email]") || {}).value || prompt("Your email");
+      if (!email) return;
+      const { error } = await sb.auth.resetPasswordForEmail(email, { redirectTo: location.origin + location.pathname });
+      const msg = $("#login-msg");
+      if (msg) msg.textContent = error ? error.message : "If that email has an account, a reset link is on its way.";
     },
   };
 
-  render();
+  // login + password forms
+  document.addEventListener("submit", async (e) => {
+    if (e.target.id === "login-form") {
+      e.preventDefault();
+      const f = new FormData(e.target), btn = e.target.querySelector("button[type=submit]"), msg = $("#login-msg");
+      btn.disabled = true; msg.textContent = "";
+      const { error } = await sb.auth.signInWithPassword({ email: f.get("email").trim(), password: f.get("password") });
+      btn.disabled = false;
+      if (error) msg.textContent = error.message === "Invalid login credentials" ? "Wrong email or password." : error.message;
+    }
+    if (e.target.id === "password-form") {
+      e.preventDefault();
+      const pw = new FormData(e.target).get("password");
+      const { error } = await sb.auth.updateUser({ password: pw });
+      if (error) { toast(error.message); return; }
+      toast("Password updated"); e.target.reset();
+      if (recovering && user) { recovering = false; history.replaceState(null, "", location.pathname); startSession(user); }
+    }
+  });
+
+  boot();
 })();

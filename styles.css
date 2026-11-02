@@ -116,3 +116,15 @@ tr.parent td { font-weight: 600; }
 
 .toast { position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%); background: var(--text); color: var(--bg); padding: 8px 16px; border-radius: 8px; font-size: 13px; }
 .banner { background: var(--ok-soft); color: var(--ok); border-radius: var(--radius); padding: 10px 14px; margin-bottom: 16px; }
+
+.account { margin-left: auto; display: flex; align-items: center; gap: 10px; }
+.account .who { max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sync { font-size: 12px; color: var(--muted); }
+.sync.error { color: var(--bad); font-weight: 600; }
+.login { max-width: 380px; margin: 60px auto; }
+.login form { display: flex; flex-direction: column; gap: 12px; }
+.login label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--muted); }
+.login input { padding: 8px 10px; background: var(--card); border: 1px solid var(--line); border-radius: 6px; color: var(--text); font-size: 14px; }
+.form-msg { color: var(--bad); font-size: 13px; min-height: 1em; }
+.link-btn { background: none; border: 0; color: var(--accent); cursor: pointer; padding: 10px 0 0; }
+@media (max-width: 560px) { .account .who { display: none; } }

@@ -2,6 +2,7 @@
 
 A simple study tracker for the CFA exam, built from the original Excel tracker (`Tracker 1.xlsx`).
 It's plain HTML/CSS/JS: no install and no build step. Open `index.html` in a browser.
+Optional login for a few people with per-user cloud sync via Supabase: see below.
 
 ## What it does (Excel sheet → app tab)
 
@@ -19,19 +20,40 @@ Extras over the spreadsheet:
 
 Grades match the Excel formulas: topic grade = Σcorrect / Σtotal; weighted grade = Σ(weight × topic grade) over the topics that have scores.
 
+## Login & sync setup (Supabase, free)
+
+Without setup the app runs in **local mode**: no login, data stays in the browser.
+With Supabase, each person signs in with email and password and gets their **own private tracker**, synced across devices.
+
+1. Create a free account at https://supabase.com, then click **New project** (any name, pick a region close to you).
+2. **SQL Editor → New query**: paste the contents of [`supabase/schema.sql`](supabase/schema.sql) and click **Run**.
+3. **Authentication → Sign In / Providers**:
+   - Turn **off** "Allow new users to sign up". Only people you add can log in.
+   - Under **Email**, turn **off** "Confirm email" (optional; skips the confirmation step for users you create).
+4. **Authentication → Users → Add user → Create new user**: enter each person's email and a password, and tick *Auto Confirm User*. Give them their password; they can change it later in Settings.
+5. **Authentication → URL Configuration**: set **Site URL** to `https://nikamelia.github.io/CFATracker/` (used by "Forgot password?" emails).
+6. **Project Settings → API Keys**: copy the **Project URL** and the **publishable** key (or the legacy **anon public** key) into [`config.js`](config.js). Commit and push.
+
+The publishable/anon key is designed to be public. Row Level Security in `schema.sql` ensures each user can read and write only their own data.
+Never put the **secret / service_role** key in this repo.
+
+On first sign-in a new user gets an empty tracker with the full curriculum. If that browser already had local data (from before login existed), the app offers to upload it.
+Settings also has **Load Excel data** (the original spreadsheet's scores) and **Start over (blank)**.
+
 ## Data
 
-- Data is saved in the browser (`localStorage`). It isn't synced between devices.
-- **Settings → Export backup** downloads a JSON file. **Import backup** loads it on another device or browser. Export regularly.
-- **Settings → Reset to Excel data** restores the data imported from the spreadsheet.
+- Cloud mode: saved automatically to your account (status shown at top right). Coming back to the tab picks up changes made on another device.
+- Local mode: saved in the browser (`localStorage`) only.
+- **Settings → Export backup** downloads a JSON copy of your data; **Import backup** loads one.
 - To re-import an updated Excel file:
   ```bash
   pip install openpyxl
   python scripts/import_excel.py "Tracker 1.xlsx" seed.js
   ```
-  Then use "Reset to Excel data" (or clear site data) in the browser.
+  Then use **Load Excel data** in Settings.
 
-## Hosting (optional)
+## Hosting
 
-Enable **GitHub Pages** (repo Settings → Pages → Deploy from branch → `main` / root) to get a URL she can open anywhere.
-Each device keeps its own data, so use Export/Import to move between them.
+GitHub Pages: repo Settings → Pages → Deploy from branch → `main` / root.
+
+`vendor/supabase-2.118.0.js` is the official `@supabase/supabase-js` browser build (MIT, see `vendor/supabase-LICENSE`), bundled so the app needs no CDN.
