@@ -141,3 +141,30 @@ select.status option { background: var(--card); color: var(--text); }
 select.status.cs-0 { background: var(--line); color: var(--muted); }
 select.status.cs-1 { background: var(--ok-soft); color: var(--ok); }
 select.status.cs-2 { background: var(--good-soft); color: var(--good); }
+
+/* Focus timer */
+.focus-wrap { max-width: 860px; margin: 0 auto; }
+.focus-card { --m: var(--accent); --m-soft: var(--accent-soft); background: var(--m-soft); border: 1px solid var(--line); border-radius: 16px; padding: 22px 16px 18px; text-align: center; margin-bottom: 16px; transition: background .3s; }
+.focus-card.mode-short { --m: #12937c; --m-soft: #dff5ef; }
+.focus-card.mode-long { --m: #7246d6; --m-soft: #efe7fd; }
+@media (prefers-color-scheme: dark) {
+  .focus-card.mode-short { --m: #3fd0b2; --m-soft: #17332d; }
+  .focus-card.mode-long { --m: #b69cff; --m-soft: #2e2545; }
+}
+.mode-tabs { display: inline-flex; gap: 4px; background: var(--card); border-radius: 999px; padding: 4px; border: 1px solid var(--line); flex-wrap: wrap; justify-content: center; }
+.mode-tabs button { border: 0; background: none; border-radius: 999px; padding: 6px 14px; cursor: pointer; color: var(--muted); font-weight: 600; }
+.mode-tabs button.active { background: var(--m); color: #fff; }
+.focus-time { font-size: clamp(64px, 18vw, 120px); font-weight: 800; letter-spacing: -0.02em; color: var(--m); font-variant-numeric: tabular-nums; line-height: 1.1; margin: 14px 0 6px; }
+.focus-progress { height: 6px; background: var(--card); border-radius: 3px; overflow: hidden; max-width: 420px; margin: 0 auto 18px; }
+.focus-progress > div { height: 100%; background: var(--m); transition: width .5s linear; }
+.focus-controls { display: flex; gap: 10px; justify-content: center; align-items: center; flex-wrap: wrap; }
+.big-btn { background: var(--m); color: #fff; border: 0; border-radius: 12px; font-size: 20px; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; padding: 14px 0; width: 200px; cursor: pointer; box-shadow: 0 4px 0 rgba(0,0,0,.15); }
+.big-btn:active { transform: translateY(3px); box-shadow: 0 1px 0 rgba(0,0,0,.15); }
+.ctl { background: var(--card); color: var(--m); border: 1px solid var(--line); border-radius: 10px; padding: 10px 14px; cursor: pointer; font-weight: 600; }
+.focus-label { margin-top: 14px; font-weight: 600; }
+.cycle { display: flex; gap: 6px; justify-content: center; align-items: center; margin-top: 10px; }
+.cycle .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--card); border: 2px solid var(--m); }
+.cycle .dot.on { background: var(--m); }
+.cycle .link-btn { margin-left: 6px; color: var(--muted); }
+.checks { display: flex; flex-direction: column; gap: 6px; margin-top: 12px; }
+label.check { display: flex; gap: 8px; align-items: center; font-size: 13px; }

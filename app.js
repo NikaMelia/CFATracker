@@ -149,7 +149,7 @@
 
   // ---------- routing ----------
   function routes() {
-    return [{ id: "dashboard", label: "Dashboard" }, { id: "hours", label: "Study hours" }]
+    return [{ id: "dashboard", label: "Dashboard" }, { id: "focus", label: "Focus" }, { id: "hours", label: "Study hours" }]
       .concat(state.passes.map((p) => ({ id: "pass-" + p.id, label: p.name })))
       .concat([{ id: "settings", label: "Settings" }]);
   }
@@ -172,6 +172,7 @@
     const view = $("#view");
     if (cur === "dashboard") view.innerHTML = renderDashboard();
     else if (cur === "hours") view.innerHTML = renderHours();
+    else if (cur === "focus") view.innerHTML = renderFocus();
     else if (cur === "settings") view.innerHTML = renderSettings();
     else view.innerHTML = renderPass(state.passes.find((p) => "pass-" + p.id === cur));
   }
@@ -272,12 +273,232 @@
       <div style="height:${(c.h / max) * 100}%"></div><span>${new Date(c.k).toLocaleDateString(undefined, { day: "numeric", month: "short" })}</span></div>`).join("")}</div>`;
   }
 
+  // ---------- focus timer ----------
+  // Pomodoro-style timer. Durations/behaviour live in state.settings.focus (synced with the account);
+  // the running timer itself is per-device (localStorage) and based on wall-clock end time, so it
+  // stays correct in background tabs and across reloads.
+  const FOCUS_DEFAULTS = { focus: 25, short: 5, long: 15, longEvery: 4, autoBreaks: false, autoFocus: false, sound: "bell", volume: 60, notify: true, goalMinutes: 120 };
+  const MODES = { focus: "Focus", short: "Short break", long: "Long break" };
+  const TIMER_KEY = "cfa-focus-timer";
+  const SOUNDS = { bell: "Bell", chime: "Soft chime", digital: "Digital beep", none: "None" };
+  function fset() {
+    if (!state.settings.focus) state.settings.focus = {};
+    return Object.assign({}, FOCUS_DEFAULTS, state.settings.focus);
+  }
+  let timer = (() => { try { return JSON.parse(localStorage.getItem(TIMER_KEY)) || null; } catch (e) { return null; } })()
+    || { mode: "focus", running: false, endsAt: null, remaining: null, count: 0, topicId: "", readingId: "" };
+  const persistTimer = () => { try { localStorage.setItem(TIMER_KEY, JSON.stringify(timer)); } catch (e) { /* ignore */ } };
+  const durMs = (mode) => Math.max(1, +fset()[mode] || FOCUS_DEFAULTS[mode]) * 60000;
+  const remainingMs = () => (timer.running ? timer.endsAt - Date.now() : timer.remaining ?? durMs(timer.mode));
+  const fmtClock = (ms) => { const s = Math.max(0, Math.ceil(ms / 1000)); return String(Math.floor(s / 60)).padStart(2, "0") + ":" + String(s % 60).padStart(2, "0"); };
+  const localISO = (t) => { const d = new Date(t); d.setMinutes(d.getMinutes() - d.getTimezoneOffset()); return d.toISOString().slice(0, 10); };
+
+  let audioCtx = null;
+  function unlockAudio() {
+    try { audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)(); if (audioCtx.state === "suspended") audioCtx.resume(); } catch (e) { /* no audio */ }
+  }
+  function playSound(kind, volume) {
+    if (kind === "none" || !audioCtx) return;
+    const v = Math.max(0, Math.min(1, (volume ?? 60) / 100)) * 0.5, t0 = audioCtx.currentTime;
+    const tone = (freq, start, len, type = "sine", gain = 1) => {
+      const o = audioCtx.createOscillator(), g = audioCtx.createGain();
+      o.type = type; o.frequency.value = freq; o.connect(g); g.connect(audioCtx.destination);
+      g.gain.setValueAtTime(0.0001, t0 + start);
+      g.gain.exponentialRampToValueAtTime(v * gain, t0 + start + 0.02);
+      g.gain.exponentialRampToValueAtTime(0.0001, t0 + start + len);
+      o.start(t0 + start); o.stop(t0 + start + len + 0.05);
+    };
+    if (kind === "bell") [0, 1.2].forEach((s) => { tone(880, s, 1.4); tone(1760, s, 0.8, "sine", 0.35); tone(1320, s, 1.1, "sine", 0.25); });
+    else if (kind === "chime") [523.25, 659.25, 783.99, 1046.5].forEach((f, i) => tone(f, i * 0.18, 1.2, "sine", 0.8));
+    else if (kind === "digital") [0, 0.25, 0.5, 1.0, 1.25, 1.5].forEach((s) => tone(1000, s, 0.12, "square", 0.25));
+  }
+  function notify(title, body) {
+    if (!fset().notify || !("Notification" in window) || Notification.permission !== "granted") return;
+    try { new Notification(title, { body, tag: "cfa-focus" }); } catch (e) { /* some mobile browsers only allow SW notifications */ }
+  }
+
+  function logFocus(ms, endTime) {
+    const minutes = Math.round(ms / 60000);
+    if (minutes < 1 || !state) return 0;
+    state.hours.push({ id: uid("h"), date: localISO(endTime), hours: Math.round((minutes / 60) * 1000) / 1000,
+      topicId: timer.topicId || "", readingId: timer.readingId || "", note: "Focus session", source: "focus" });
+    save();
+    return minutes;
+  }
+  function nextMode(fromFocusCompleted) {
+    if (timer.mode !== "focus") return "focus";
+    const every = Math.max(1, +fset().longEvery || 4);
+    return fromFocusCompleted && timer.count % every === 0 ? "long" : "short";
+  }
+  function goTo(mode, autoStart, from) {
+    timer.mode = mode; timer.remaining = null;
+    timer.running = !!autoStart;
+    timer.endsAt = autoStart ? (from || Date.now()) + durMs(mode) : null;
+    persistTimer();
+  }
+  function completeTimer() {
+    const f = fset(), endTime = timer.endsAt || Date.now();
+    if (timer.mode === "focus") {
+      const mins = logFocus(durMs("focus"), endTime);
+      timer.count += 1;
+      const nm = nextMode(true);
+      playSound(f.sound, f.volume);
+      notify("Focus session done 🎉", `${mins} min logged${timer.topicId ? " to " + topicName(timer.topicId) : ""}. Time for a ${MODES[nm].toLowerCase()}.`);
+      goTo(nm, f.autoBreaks, endTime);
+      toast(`Focus session done — ${mins} min logged`);
+    } else {
+      playSound(f.sound, f.volume);
+      notify("Break over", "Ready for the next focus session?");
+      goTo("focus", f.autoFocus, endTime);
+      toast("Break over — back to focus");
+    }
+    afterTimerChange();
+  }
+  function afterTimerChange() {
+    if (current() === "focus") rerenderKeepOpen(); else if (current() === "hours" || current() === "dashboard") render();
+    tickDisplay();
+  }
+  const focusActions = {
+    start() {
+      unlockAudio();
+      if (fset().notify && "Notification" in window && Notification.permission === "default") Notification.requestPermission();
+      if (timer.running) return;
+      timer.endsAt = Date.now() + remainingMs(); timer.running = true; timer.remaining = null; persistTimer(); afterTimerChange();
+    },
+    pause() { if (!timer.running) return; timer.remaining = timer.endsAt - Date.now(); timer.running = false; timer.endsAt = null; persistTimer(); afterTimerChange(); },
+    reset() { timer.running = false; timer.endsAt = null; timer.remaining = null; persistTimer(); afterTimerChange(); },
+    skip() {
+      if (timer.mode === "focus") {
+        const done = durMs("focus") - remainingMs();
+        const mins = logFocus(done, Date.now());
+        if (mins) toast(`Logged ${mins} min`);
+        goTo(nextMode(false), false);
+      } else goTo("focus", false);
+      afterTimerChange();
+    },
+    mode(b) {
+      if (timer.running && !confirm("Stop the current timer?")) return;
+      timer.running = false; goTo(b.dataset.mode, false); afterTimerChange();
+    },
+    testSound() { unlockAudio(); const f = fset(); playSound(f.sound === "none" ? "bell" : f.sound, f.volume); },
+    resetCycle() { timer.count = 0; persistTimer(); afterTimerChange(); },
+  };
+
+  function tickDisplay() {
+    const ms = remainingMs(), clock = fmtClock(ms);
+    const el = $("#focus-time"); if (el) el.textContent = clock;
+    const bar = $("#focus-bar"); if (bar) bar.style.width = Math.min(100, (1 - ms / durMs(timer.mode)) * 100) + "%";
+    const tab = $('#tabs [data-route="focus"]');
+    if (tab) tab.textContent = timer.running ? `Focus · ${clock}` : "Focus";
+    document.title = timer.running ? `${clock} · ${MODES[timer.mode]} — CFA Tracker` : "CFA Study Tracker";
+  }
+  setInterval(() => {
+    if (!state) return;
+    if (timer.running && remainingMs() <= 0) completeTimer(); else tickDisplay();
+  }, 500);
+
+  function streakInfo() {
+    const perDay = {};
+    state.hours.forEach((h) => { if (h.date) perDay[h.date] = (perDay[h.date] || 0) + (+h.hours || 0) * 60; });
+    let streak = 0; const d = new Date();
+    if (!perDay[localISO(d.getTime())]) d.setDate(d.getDate() - 1); // today not studied yet: streak still alive
+    while (perDay[localISO(d.getTime())]) { streak++; d.setDate(d.getDate() - 1); }
+    return { perDay, streak };
+  }
+
+  function renderFocus() {
+    const f = fset(), today = todayISO(), ms = remainingMs();
+    const todays = state.hours.filter((h) => h.date === today);
+    const sessions = todays.filter((h) => h.source === "focus");
+    const minutesToday = Math.round(todays.reduce((s, h) => s + (+h.hours || 0) * 60, 0));
+    const goal = +f.goalMinutes || 0, { streak } = streakInfo();
+    const every = Math.max(1, +f.longEvery || 4), inCycle = timer.count % every;
+    const topic = state.topics.find((t) => t.id === timer.topicId);
+    const topicOpts = `<option value="">— General study —</option>` + state.topics.map((t) => `<option value="${t.id}" ${t.id === timer.topicId ? "selected" : ""}>${esc(t.name)}</option>`).join("");
+    const readingOpts = `<option value="">— Any reading —</option>` + (topic ? topic.readings.map((r) => `<option value="${r.id}" ${r.id === timer.readingId ? "selected" : ""}>${esc(r.name)}</option>`).join("") : "");
+    const label = { focus: "Time to focus!", short: "Short break — stretch, drink water.", long: "Long break — step away for a bit." }[timer.mode];
+    const dots = Array.from({ length: every }, (_, i) => `<span class="dot ${i < inCycle ? "on" : ""}"></span>`).join("");
+    const sessRows = sessions.slice().reverse().map((h) => `<tr><td>${esc(topicName(h.topicId))}${h.readingId ? `<div class="small muted">${esc(readingName(h.topicId, h.readingId))}</div>` : ""}</td>
+      <td class="num">${Math.round(h.hours * 60)} min</td></tr>`).join("") || `<tr><td class="muted">No focus sessions yet today.</td></tr>`;
+    const num = (key, label, min, max, step = 1) => `<label>${label}<input type="number" min="${min}" max="${max}" step="${step}" data-focus-set="${key}" value="${f[key]}"></label>`;
+    const chk = (key, label) => `<label class="check"><input type="checkbox" data-focus-set="${key}" ${f[key] ? "checked" : ""}> ${label}</label>`;
+
+    return `<div class="focus-wrap">
+      <div class="focus-card mode-${timer.mode}">
+        <div class="mode-tabs">${Object.entries(MODES).map(([k, v]) => `<button class="${k === timer.mode ? "active" : ""}" data-faction="mode" data-mode="${k}">${v}</button>`).join("")}</div>
+        <div id="focus-time" class="focus-time">${fmtClock(ms)}</div>
+        <div class="focus-progress"><div id="focus-bar" style="width:${Math.min(100, (1 - ms / durMs(timer.mode)) * 100)}%"></div></div>
+        <div class="focus-controls">
+          ${timer.running ? `<button class="big-btn" data-faction="pause">Pause</button>` : `<button class="big-btn" data-faction="start">${ms < durMs(timer.mode) ? "Resume" : "Start"}</button>`}
+          <button class="ctl" data-faction="reset" title="Restart this timer">Reset</button>
+          <button class="ctl" data-faction="skip" title="${timer.mode === "focus" ? "End now and log the minutes done so far" : "Skip the break"}">${timer.mode === "focus" ? "Finish early" : "Skip"}</button>
+        </div>
+        <div class="focus-label">${label}</div>
+        <div class="cycle" title="Focus sessions until the long break">${dots}<button class="link-btn small" data-faction="resetCycle">reset</button></div>
+      </div>
+
+      <div class="card"><h3>Studying</h3><div class="form-grid">
+        <label>Topic<select data-focus-pick="topicId">${topicOpts}</select></label>
+        <label>Reading (optional)<select data-focus-pick="readingId" ${topic ? "" : "disabled"}>${readingOpts}</select></label>
+      </div><p class="small muted" style="margin:10px 0 0">Every finished focus session is added to <a href="#hours">Study hours</a> for this topic.</p></div>
+
+      <div class="kpis">
+        <div class="kpi"><div class="label">Today</div><div class="value">${minutesToday} min</div><div class="sub">${goal ? `Goal ${goal} min` : "No daily goal"}</div>
+          ${goal ? `<div class="progress"><div style="width:${Math.min(100, (minutesToday / goal) * 100)}%;${minutesToday >= goal ? "background:var(--good)" : ""}"></div></div>` : ""}</div>
+        <div class="kpi"><div class="label">Focus sessions today</div><div class="value">${sessions.length}</div><div class="sub">${Math.round(sessions.reduce((s, h) => s + h.hours * 60, 0))} min focused</div></div>
+        <div class="kpi"><div class="label">Streak</div><div class="value">${streak} ${streak === 1 ? "day" : "days"}</div><div class="sub">Days in a row with study time</div></div>
+      </div>
+
+      <div class="grid2">
+        <div class="card"><h3>Today's sessions</h3><table><tbody>${sessRows}</tbody></table></div>
+        <div class="card"><h3>Timer settings</h3>
+          <div class="form-grid">
+            ${num("focus", "Focus (minutes)", 1, 180)}${num("short", "Short break (minutes)", 1, 60)}${num("long", "Long break (minutes)", 1, 90)}
+            ${num("longEvery", "Long break after (sessions)", 1, 12)}${num("goalMinutes", "Daily goal (minutes)", 0, 1440, 5)}
+            <label>Alarm sound<select data-focus-set="sound">${Object.entries(SOUNDS).map(([k, v]) => `<option value="${k}" ${k === f.sound ? "selected" : ""}>${v}</option>`).join("")}</select></label>
+            <label>Volume<input type="range" min="0" max="100" data-focus-set="volume" value="${f.volume}"></label>
+          </div>
+          <div class="checks">${chk("autoBreaks", "Start breaks automatically")}${chk("autoFocus", "Start focus automatically after a break")}${chk("notify", "Browser notification when a timer ends")}</div>
+          <div class="row" style="margin-top:10px"><button class="btn ghost sm" data-faction="testSound">Test sound</button>
+            <span class="small muted">New lengths apply from the next timer.</span></div>
+        </div>
+      </div></div>`;
+  }
+  function readingName(topicId, readingId) {
+    const t = state.topics.find((x) => x.id === topicId);
+    return ((t && t.readings.find((r) => r.id === readingId)) || {}).name || "";
+  }
+  document.addEventListener("click", (e) => {
+    const b = e.target.closest("[data-faction]");
+    if (b) focusActions[b.dataset.faction](b);
+  });
+  document.addEventListener("change", (e) => {
+    const el = e.target;
+    if (el.dataset.focusPick) {
+      timer[el.dataset.focusPick] = el.value;
+      if (el.dataset.focusPick === "topicId") timer.readingId = "";
+      persistTimer(); rerenderKeepOpen(); return;
+    }
+    if (el.dataset.focusSet) {
+      const k = el.dataset.focusSet;
+      let v = el.type === "checkbox" ? el.checked : el.type === "number" || el.type === "range" ? toNum(el.value) : el.value;
+      if ((el.type === "number" || el.type === "range") && (v == null || v < +el.min)) { v = FOCUS_DEFAULTS[k]; el.value = v; }
+      if (el.type === "number" && v > +el.max) { v = +el.max; el.value = v; }
+      if (!state.settings.focus) state.settings.focus = {};
+      state.settings.focus[k] = v; save();
+      if (k === "notify" && v && "Notification" in window && Notification.permission === "default") Notification.requestPermission();
+      if (k === "sound" || k === "volume") { unlockAudio(); playSound(fset().sound, fset().volume); }
+      if (el.type !== "range") rerenderKeepOpen();
+      toast("Saved");
+    }
+  });
+
   // ---------- hours ----------
   function renderHours() {
     const hbt = hoursByTopic(), hrs = totalHours(), goal = +state.settings.hoursGoal || 0;
     const opts = state.topics.map((t) => `<option value="${t.id}">${esc(t.name)}</option>`).join("") + `<option value="">Other / general</option>`;
     const list = state.hours.slice().sort((a, b) => (b.date || "").localeCompare(a.date || ""));
-    const rows = list.map((h) => `<tr><td>${fmtDate(h.date)}</td><td class="num">${fmtNum(+h.hours, 2)}</td><td>${esc(topicName(h.topicId))}</td>
+    const rows = list.map((h) => `<tr><td>${fmtDate(h.date)}</td><td class="num">${fmtNum(+h.hours, 2)}</td><td>${esc(topicName(h.topicId))}${h.readingId ? `<div class="small muted">${esc(readingName(h.topicId, h.readingId))}</div>` : ""}</td>
       <td class="muted">${esc(h.note)}</td><td class="num"><button class="icon-btn" title="Delete" data-del-hour="${h.id}">×</button></td></tr>`).join("")
       || `<tr><td colspan="5" class="muted">Nothing logged yet.</td></tr>`;
     const summary = state.topics.map((t) => `<tr><td>${esc(t.name)}</td><td class="num">${fmtNum(hbt[t.id] || 0)}</td></tr>`).join("")
