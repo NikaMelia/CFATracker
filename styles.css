@@ -168,3 +168,24 @@ select.status.cs-2 { background: var(--good-soft); color: var(--good); }
 .cycle .link-btn { margin-left: 6px; color: var(--muted); }
 .checks { display: flex; flex-direction: column; gap: 6px; margin-top: 12px; }
 label.check { display: flex; gap: 8px; align-items: center; font-size: 13px; }
+
+/* Weeks */
+.week-chart .col { position: relative; }
+.week-chart .col span { height: 14px; }
+.week-chart .col i.goal { position: absolute; left: -2px; right: -2px; border-top: 2px dashed var(--muted); opacity: .7; }
+.legend i.goal-key { width: 14px; height: 0; border-top: 2px dashed var(--muted); border-radius: 0; vertical-align: 3px; }
+.progress.wk { height: 8px; margin-top: 4px; }
+.this-week .tw-grid { display: grid; grid-template-columns: minmax(220px, 1fr) 1.4fr; gap: 24px; align-items: end; margin-top: 12px; }
+@media (max-width: 720px) { .this-week .tw-grid { grid-template-columns: 1fr; } }
+.tw-big { font-size: 40px; font-weight: 800; font-variant-numeric: tabular-nums; line-height: 1.1; }
+.tw-big span { font-size: 18px; font-weight: 600; color: var(--muted); }
+.week-chart.days { height: 150px; gap: 8px; }
+.week-chart.days .col { max-width: none; }
+.week-chart.days .col em { font-style: normal; font-size: 11px; color: var(--muted); margin-bottom: 2px; }
+.week-chart.days .col.today span { color: var(--accent); font-weight: 700; }
+.week-chart.days .col.future div { opacity: .35; }
+textarea.plan { width: 100%; resize: vertical; font: inherit; }
+.weeks-table tr.current td { background: var(--accent-soft); }
+.weeks-table input.note { min-width: 180px; }
+
+input::placeholder, textarea::placeholder { color: var(--muted); opacity: .6; }

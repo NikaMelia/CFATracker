@@ -149,7 +149,7 @@
 
   // ---------- routing ----------
   function routes() {
-    return [{ id: "dashboard", label: "Dashboard" }, { id: "focus", label: "Focus" }, { id: "hours", label: "Study hours" }]
+    return [{ id: "dashboard", label: "Dashboard" }, { id: "focus", label: "Focus" }, { id: "hours", label: "Study hours" }, { id: "weeks", label: "Weeks" }]
       .concat(state.passes.map((p) => ({ id: "pass-" + p.id, label: p.name })))
       .concat([{ id: "settings", label: "Settings" }]);
   }
@@ -173,6 +173,7 @@
     if (cur === "dashboard") view.innerHTML = renderDashboard();
     else if (cur === "hours") view.innerHTML = renderHours();
     else if (cur === "focus") view.innerHTML = renderFocus();
+    else if (cur === "weeks") view.innerHTML = renderWeeks();
     else if (cur === "settings") view.innerHTML = renderSettings();
     else view.innerHTML = renderPass(state.passes.find((p) => "pass-" + p.id === cur));
   }
@@ -200,13 +201,14 @@
     const kpis = [
       { label: "Days left", value: daysLeft == null ? "–" : Math.max(daysLeft, 0), sub: s.examDate ? "Exam " + fmtDate(s.examDate) : "No exam date" },
       { label: "Days gone", value: daysGone == null ? "–" : daysGone, sub: s.startDate ? "Since " + fmtDate(s.startDate) : "" },
+      (() => { const w = weekData(weekStartOf(today)); return { label: "This week", value: `${fmtNum(w.total)} / ${fmtNum(w.goal)} h`, sub: w.met ? "Weekly goal met 🎉" : w.goal ? `${fmtNum(Math.max(0, w.goal - w.total))} h to go` : "No weekly goal", prog: w.goal ? w.pct : null, good: w.met }; })(),
       { label: "Hours done", value: fmtNum(hrs), sub: goal ? `${fmtNum(Math.max(goal - hrs, 0))} of ${goal} left` : "", prog: goal ? hrs / goal : null },
       { label: "Readings done", value: `${fs.done}/${fs.count}`, sub: first.name, prog: fs.count ? fs.done / fs.count : null },
       { label: "Hours / reading", value: fs.done ? fmtNum(hrs / fs.done) : "–", sub: "Average" },
     ].concat(sums.map(({ p, s: ps }) => ({ label: p.name + " grade", value: fmtPct(ps.pct), sub: "Weighted " + fmtPct(ps.weighted) })));
 
     const kpiHtml = kpis.map((k) => `<div class="kpi"><div class="label">${esc(k.label)}</div><div class="value">${esc(k.value)}</div>
-      <div class="sub">${esc(k.sub)}</div>${k.prog != null ? `<div class="progress"><div style="width:${Math.min(k.prog, 1) * 100}%"></div></div>` : ""}</div>`).join("");
+      <div class="sub">${esc(k.sub)}</div>${k.prog != null ? `<div class="progress"><div style="width:${Math.min(k.prog, 1) * 100}%;${k.good ? "background:var(--good)" : ""}"></div></div>` : ""}</div>`).join("");
 
     const passHeads = state.passes.map((p) => `<th class="num">${esc(p.name)}</th>`).join("");
     const rows = state.topics.map((t) => {
@@ -255,23 +257,155 @@
         <div class="card"><h3>Grades by topic</h3><div class="legend">${legend}</div>${bars}</div>
         <div class="card"><h3>Weakest readings</h3><table><tbody>${weak}</tbody></table></div>
       </div>
-      <div class="card"><h3>Hours per week</h3>${weekChart()}</div>`;
+      <div class="card"><div class="row"><h3 style="margin:0">Hours per week</h3><span class="spacer"></span><a class="small" href="#weeks">Weekly tracker →</a></div>${weekChart()}</div>`;
   }
 
   function weekChart() {
-    if (!state.hours.length) return `<p class="muted">No hours logged yet — add them on the <a href="#hours">Study hours</a> tab.</p>`;
-    const monday = (iso) => { const d = new Date(iso + "T00:00:00"); d.setDate(d.getDate() - ((d.getDay() + 6) % 7)); return d; };
-    const weeks = {};
-    state.hours.forEach((h) => { if (h.date) { const k = monday(h.date).getTime(); weeks[k] = (weeks[k] || 0) + (+h.hours || 0); } });
-    const end = monday(todayISO()).getTime();
-    const keys = Object.keys(weeks).map(Number);
-    let start = Math.max(Math.min(...keys), end - 25 * 7 * 86400000);
-    const cols = [];
-    for (let k = start; k <= Math.max(end, Math.max(...keys)); k += 7 * 86400000) cols.push({ k, h: weeks[k] || 0 });
-    const max = Math.max(1, ...cols.map((c) => c.h));
-    return `<div class="week-chart">${cols.map((c) => `<div class="col" title="${fmtNum(c.h)} h, week of ${new Date(c.k).toLocaleDateString()}">
-      <div style="height:${(c.h / max) * 100}%"></div><span>${new Date(c.k).toLocaleDateString(undefined, { day: "numeric", month: "short" })}</span></div>`).join("")}</div>`;
+    if (!state.hours.length) return `<p class="muted">No hours logged yet — use the <a href="#focus">Focus</a> timer or add them on the <a href="#hours">Study hours</a> tab.</p>`;
+    const weeks = weekList().filter((wk) => wk <= weekStartOf(todayISO())).slice(0, 26).reverse().map(weekData);
+    const max = Math.max(1, ...weeks.map((w) => Math.max(w.total, w.goal)));
+    return `<div class="week-chart">${weeks.map((w) => `<div class="col" title="${fmtNum(w.total)} of ${fmtNum(w.goal)} h, week of ${fmtShort(w.wk)}">
+      ${w.goal ? `<i class="goal" style="bottom:calc(18px + (100% - 18px) * ${(w.goal / max).toFixed(4)})"></i>` : ""}
+      <div style="height:calc((100% - 18px) * ${(w.total / max).toFixed(4)});background:${goalColor(w)}"></div><span>${fmtShort(w.wk)}</span></div>`).join("")}</div>
+      <div class="legend" style="margin-top:8px"><span><i style="background:var(--good)"></i>Goal met</span><span><i style="background:var(--accent)"></i>Below goal</span><span><i class="goal-key"></i>Weekly goal</span></div>`;
   }
+
+  // ---------- weeks ----------
+  // Dates are handled as "YYYY-MM-DD" strings with UTC arithmetic, so DST changes can't shift weeks.
+  // state.settings.weeklyGoal = default hours per week; state.settings.weekStart = "mon" | "sun";
+  // state.weeks[weekStartISO] = { goal?: number, note?: string } for per-week overrides and plans.
+  const DAY = 86400000;
+  const isoAdd = (iso, n) => new Date(Date.parse(iso + "T00:00:00Z") + n * DAY).toISOString().slice(0, 10);
+  const isoDow = (iso) => new Date(iso + "T00:00:00Z").getUTCDay();
+  function weekStartOf(iso) {
+    const off = state.settings.weekStart === "sun" ? isoDow(iso) : (isoDow(iso) + 6) % 7;
+    return isoAdd(iso, -off);
+  }
+  const fmtShort = (iso) => new Date(iso + "T00:00:00Z").toLocaleDateString(undefined, { day: "numeric", month: "short", timeZone: "UTC" });
+  const fmtRange = (wk) => `${fmtShort(wk)} – ${fmtShort(isoAdd(wk, 6))}`;
+  const dayName = (iso) => new Date(iso + "T00:00:00Z").toLocaleDateString(undefined, { weekday: "short", timeZone: "UTC" });
+  const defaultWeeklyGoal = () => { const g = state.settings.weeklyGoal; return g == null ? 15 : +g || 0; };
+  function weekGoal(wk) {
+    const w = (state.weeks || {})[wk];
+    return w && w.goal != null ? +w.goal : defaultWeeklyGoal();
+  }
+  function weekData(wk) {
+    const days = Array.from({ length: 7 }, (_, i) => ({ iso: isoAdd(wk, i), h: 0 }));
+    const end = isoAdd(wk, 6), byTopic = {};
+    let total = 0, sessions = 0;
+    state.hours.forEach((h) => {
+      if (!h.date || h.date < wk || h.date > end) return;
+      const v = +h.hours || 0;
+      days[dayDiff(wk, h.date)].h += v; total += v;
+      byTopic[h.topicId || ""] = (byTopic[h.topicId || ""] || 0) + v;
+      if (h.source === "focus") sessions++;
+    });
+    const goal = weekGoal(wk);
+    return { wk, days, total, byTopic, sessions, goal, pct: goal ? total / goal : null, met: goal > 0 && total >= goal - 1e-9,
+      studied: days.filter((d) => d.h > 0).length };
+  }
+  function weekList() {
+    // From the first week with hours (or a saved plan) up to next week, newest first.
+    const cur = weekStartOf(todayISO()), next = isoAdd(cur, 7);
+    let first = cur;
+    state.hours.forEach((h) => { if (h.date && h.date < first) first = h.date; });
+    Object.keys(state.weeks || {}).forEach((k) => { if (k < first) first = k; });
+    const list = [];
+    for (let wk = weekStartOf(first); wk <= next; wk = isoAdd(wk, 7)) list.push(wk);
+    return list.reverse();
+  }
+  function weekStats() {
+    const cur = weekStartOf(todayISO());
+    const past = weekList().filter((wk) => wk < cur).map(weekData);
+    let streak = 0;
+    for (const w of past) { if (w.met) streak++; else break; } // past is newest first
+    if (weekData(cur).met) streak++;
+    const last4 = past.slice(0, 4);
+    const best = past.concat([weekData(cur)]).reduce((b, w) => (!b || w.total > b.total ? w : b), null);
+    return { metCount: past.filter((w) => w.met).length, pastCount: past.length, streak,
+      avg4: last4.length ? last4.reduce((s, w) => s + w.total, 0) / last4.length : null, best };
+  }
+  const goalColor = (w) => (w.met ? "var(--good)" : "var(--accent)");
+  function weekBar(w) {
+    return `<div class="progress wk"><div style="width:${Math.min(1, w.pct || 0) * 100}%;background:${goalColor(w)}"></div></div>`;
+  }
+
+  function renderWeeks() {
+    const today = todayISO(), cur = weekStartOf(today), w = weekData(cur), st = weekStats();
+    const daysLeft = 7 - dayDiff(cur, today); // including today
+    const left = Math.max(0, w.goal - w.total);
+    const maxDay = Math.max(w.goal / 7, ...w.days.map((d) => d.h), 0.1);
+    const dayBars = w.days.map((d) => `<div class="col ${d.iso === today ? "today" : ""} ${d.iso > today ? "future" : ""}" title="${fmtNum(d.h, 2)} h">
+        <em>${d.h ? fmtNum(d.h) : ""}</em><div style="height:calc((100% - 36px) * ${(d.h / maxDay).toFixed(4)})"></div><span>${dayName(d.iso)}</span></div>`).join("");
+    const topTopics = Object.entries(w.byTopic).sort((a, b) => b[1] - a[1])
+      .map(([id, h]) => `<tr><td>${esc(topicName(id))}</td><td class="num">${fmtNum(h)} h</td></tr>`).join("") || `<tr><td class="muted">Nothing logged this week yet.</td></tr>`;
+    const note = ((state.weeks || {})[cur] || {}).note || "";
+    const override = ((state.weeks || {})[cur] || {}).goal;
+
+    const rows = weekList().map((wk) => {
+      const d = weekData(wk), info = (state.weeks || {})[wk] || {};
+      const isCur = wk === cur, future = wk > cur;
+      const top = Object.entries(d.byTopic).sort((a, b) => b[1] - a[1])[0];
+      const badge = future ? `<span class="pill none">Next week</span>` : isCur ? `<span class="pill ${d.met ? "good" : "ok"}">${d.met ? "Goal met" : "In progress"}</span>`
+        : d.goal ? `<span class="pill ${d.met ? "good" : "bad"}">${d.met ? "Goal met" : "Missed"}</span>` : "";
+      return `<tr class="${isCur ? "current" : ""}">
+        <td><b>${fmtRange(wk)}</b><div class="small muted">${isCur ? "This week" : future ? "Plan ahead" : `${d.studied} day${d.studied === 1 ? "" : "s"} studied`}</div></td>
+        <td class="num">${fmtNum(d.total)}</td>
+        <td><input type="number" class="n" min="0" step="0.5" data-week-goal="${wk}" value="${info.goal ?? ""}" placeholder="${defaultWeeklyGoal()}"></td>
+        <td style="min-width:120px">${weekBar(d)}<div class="small muted">${d.goal ? Math.round((d.pct || 0) * 100) + "%" : "no goal"}</div></td>
+        <td>${badge}</td>
+        <td class="small">${top ? esc(topicName(top[0])) : "<span class='muted'>–</span>"}</td>
+        <td><input type="text" class="note" data-week-note="${wk}" value="${esc(info.note || "")}" placeholder="Plan / notes"></td></tr>`;
+    }).join("");
+
+    return `<div class="row"><h2>Weeks</h2><span class="spacer"></span>
+        <label class="small muted row" style="gap:6px">Default weekly goal <input type="number" class="n" min="0" step="0.5" data-setting="weeklyGoal" value="${defaultWeeklyGoal()}"> h</label>
+        <label class="small muted row" style="gap:6px">Week starts <select data-setting="weekStart"><option value="mon" ${state.settings.weekStart !== "sun" ? "selected" : ""}>Monday</option><option value="sun" ${state.settings.weekStart === "sun" ? "selected" : ""}>Sunday</option></select></label></div>
+
+      <div class="card this-week">
+        <div class="row"><h3 style="margin:0">This week · ${fmtRange(cur)}</h3><span class="spacer"></span>${w.met ? `<span class="pill good">Goal met 🎉</span>` : ""}</div>
+        <div class="tw-grid">
+          <div>
+            <div class="tw-big">${fmtNum(w.total)}<span> / ${fmtNum(w.goal)} h</span></div>
+            ${weekBar(w)}
+            <p class="muted small" style="margin:8px 0 0">${!w.goal ? "No goal set for this week." : w.met ? `${fmtNum(w.total - w.goal)} h over the goal.`
+              : `${fmtNum(left)} h to go · about <b>${fmtNum(left / daysLeft)} h/day</b> for the ${daysLeft} day${daysLeft === 1 ? "" : "s"} left.`}</p>
+            <div class="row small" style="margin-top:10px"><label class="row" style="gap:6px">Goal this week <input type="number" class="n" min="0" step="0.5" data-week-goal="${cur}" value="${override ?? ""}" placeholder="${defaultWeeklyGoal()}"> h</label>
+              <span class="muted">${override != null ? "(custom for this week)" : "(default)"}</span></div>
+          </div>
+          <div class="week-chart days">${dayBars}</div>
+        </div>
+        <div class="grid2" style="margin-top:14px">
+          <div><h3>Plan for this week</h3><textarea class="plan" rows="4" data-week-note="${cur}" placeholder="e.g. Finish Fixed Income readings 52–56, revise Ethics">${esc(note)}</textarea></div>
+          <div><h3>By topic</h3><table><tbody>${topTopics}</tbody></table>
+            <p class="small muted">${w.sessions} focus session${w.sessions === 1 ? "" : "s"} · ${w.studied} of 7 days studied</p></div>
+        </div>
+      </div>
+
+      <div class="kpis">
+        <div class="kpi"><div class="label">Goal streak</div><div class="value">${st.streak} wk</div><div class="sub">Weeks in a row hitting the goal</div></div>
+        <div class="kpi"><div class="label">Goals met</div><div class="value">${st.metCount}/${st.pastCount}</div><div class="sub">Past weeks</div></div>
+        <div class="kpi"><div class="label">Average</div><div class="value">${st.avg4 == null ? "–" : fmtNum(st.avg4) + " h"}</div><div class="sub">Per week, last 4 weeks</div></div>
+        <div class="kpi"><div class="label">Best week</div><div class="value">${st.best && st.best.total ? fmtNum(st.best.total) + " h" : "–"}</div><div class="sub">${st.best && st.best.total ? fmtRange(st.best.wk) : ""}</div></div>
+      </div>
+
+      <div class="card"><h3>All weeks</h3><p class="small muted" style="margin-top:-4px">Leave a week's goal empty to use the default. Hours come from <a href="#hours">Study hours</a> and the <a href="#focus">Focus</a> timer.</p>
+        <div class="table-wrap"><table class="weeks-table">
+        <thead><tr><th>Week</th><th class="num">Hours</th><th>Goal</th><th>Progress</th><th></th><th>Top topic</th><th>Plan / notes</th></tr></thead>
+        <tbody>${rows}</tbody></table></div></div>`;
+  }
+
+  document.addEventListener("change", (e) => {
+    const el = e.target, wk = el.dataset.weekGoal || el.dataset.weekNote;
+    if (!wk) return;
+    if (!state.weeks) state.weeks = {};
+    const w = state.weeks[wk] || (state.weeks[wk] = {});
+    if (el.dataset.weekGoal) { const v = toNum(el.value); if (v == null || v < 0) delete w.goal; else w.goal = v; }
+    else w.note = el.value;
+    if (w.goal == null && !w.note) delete state.weeks[wk];
+    save();
+    if (el.dataset.weekGoal) rerenderKeepOpen(); else toast("Saved");
+  });
 
   // ---------- focus timer ----------
   // Pomodoro-style timer. Durations/behaviour live in state.settings.focus (synced with the account);
@@ -446,6 +580,7 @@
         <div class="kpi"><div class="label">Today</div><div class="value">${minutesToday} min</div><div class="sub">${goal ? `Goal ${goal} min` : "No daily goal"}</div>
           ${goal ? `<div class="progress"><div style="width:${Math.min(100, (minutesToday / goal) * 100)}%;${minutesToday >= goal ? "background:var(--good)" : ""}"></div></div>` : ""}</div>
         <div class="kpi"><div class="label">Focus sessions today</div><div class="value">${sessions.length}</div><div class="sub">${Math.round(sessions.reduce((s, h) => s + h.hours * 60, 0))} min focused</div></div>
+        ${(() => { const w = weekData(weekStartOf(today)); return `<div class="kpi"><div class="label">This week</div><div class="value">${fmtNum(w.total)} / ${fmtNum(w.goal)} h</div><div class="sub"><a href="#weeks">Weekly tracker</a></div>${w.goal ? `<div class="progress"><div style="width:${Math.min(100, (w.pct || 0) * 100)}%;${w.met ? "background:var(--good)" : ""}"></div></div>` : ""}</div>`; })()}
         <div class="kpi"><div class="label">Streak</div><div class="value">${streak} ${streak === 1 ? "day" : "days"}</div><div class="sub">Days in a row with study time</div></div>
       </div>
 
@@ -628,7 +763,9 @@
       const t = state.topics.find((x) => x.id === el.dataset.conspect); t.conspect = el.value; save(); render(); return;
     }
     if (el.dataset.setting) {
-      state.settings[el.dataset.setting] = el.type === "number" ? toNum(el.value) : el.value; save(); toast("Saved"); return;
+      state.settings[el.dataset.setting] = el.type === "number" ? toNum(el.value) : el.value; save(); toast("Saved");
+      if (current() === "weeks") rerenderKeepOpen();
+      return;
     }
     if (el.dataset.topicField) {
       const t = state.topics.find((x) => x.id === el.dataset.topicId);
@@ -697,6 +834,8 @@
         <label>Exam date<input type="date" data-setting="examDate" value="${esc(s.examDate)}"></label>
         <label>Study start date<input type="date" data-setting="startDate" value="${esc(s.startDate)}"></label>
         <label>Study hours goal<input type="number" min="0" data-setting="hoursGoal" value="${s.hoursGoal ?? ""}"></label>
+        <label>Weekly hours goal<input type="number" min="0" step="0.5" data-setting="weeklyGoal" value="${defaultWeeklyGoal()}"></label>
+        <label>Week starts on<select data-setting="weekStart"><option value="mon" ${s.weekStart !== "sun" ? "selected" : ""}>Monday</option><option value="sun" ${s.weekStart === "sun" ? "selected" : ""}>Sunday</option></select></label>
         <label>Level<input type="text" data-setting="level" value="${esc(s.level || "")}"></label>
       </div></div>
       <div class="card"><h3>Practice passes</h3><p class="muted small">Each pass gets its own tab for scores (e.g. First pass, Revision, Mock exams).</p>
