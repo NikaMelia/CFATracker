@@ -284,7 +284,7 @@
   const fmtShort = (iso) => new Date(iso + "T00:00:00Z").toLocaleDateString(undefined, { day: "numeric", month: "short", timeZone: "UTC" });
   const fmtRange = (wk) => `${fmtShort(wk)} – ${fmtShort(isoAdd(wk, 6))}`;
   const dayName = (iso) => new Date(iso + "T00:00:00Z").toLocaleDateString(undefined, { weekday: "short", timeZone: "UTC" });
-  const defaultWeeklyGoal = () => { const g = state.settings.weeklyGoal; return g == null ? 15 : +g || 0; };
+  const defaultWeeklyGoal = () => { const g = state.settings.weeklyGoal; return g == null ? 12 : +g || 0; };
   function weekGoal(wk) {
     const w = (state.weeks || {})[wk];
     return w && w.goal != null ? +w.goal : defaultWeeklyGoal();
